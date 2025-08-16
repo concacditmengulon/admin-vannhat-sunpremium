@@ -1,23 +1,28 @@
 {
-  "name": "super-vip-taixiu-predictor",
+  "name": "vip-taixiu-bot",
   "version": "1.0.0",
-  "description": "API dự đoán Tài Xỉu với các thuật toán nâng cao và backtest",
-  "main": "server.js",
+  "description": "VIP TaiXiu Bot - Express API + Telegram Bot + Prediction VIP",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.66.0",
+    "pytz": "^0.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
   },
   "keywords": [
     "taixiu",
-    "predictor",
+    "telegram-bot",
+    "prediction",
     "express",
-    "axios",
-    "api"
+    "vip"
   ],
-  "author": "Your Name",
-  "license": "ISC",
-  "dependencies": {
-    "axios": "^1.6.8",
-    "cors": "^2.8.5",
-    "express": "^4.19.2"
-  }
+  "author": "MinhDuc",
+  "license": "MIT"
 }
