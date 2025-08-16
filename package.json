@@ -1,17 +1,23 @@
 {
-  "name": "tai-xiu-predictor",
+  "name": "super-vip-taixiu-predictor",
   "version": "1.0.0",
-  "description": "A predictor application for Tai Xiu game using ensemble methods",
+  "description": "API dự đoán Tài Xỉu với các thuật toán nâng cao và backtest",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server.js"
   },
+  "keywords": [
+    "taixiu",
+    "predictor",
+    "express",
+    "axios",
+    "api"
+  ],
+  "author": "Your Name",
+  "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.6.0",
-    "cors": "^2.8.5"
-  },
-  "author": "xAI Grok",
-  "license": "MIT"
+    "axios": "^1.6.8",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
 }
