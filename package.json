@@ -2,10 +2,10 @@
   "name": "tai-xiu-predictor",
   "version": "1.0.0",
   "description": "A predictor application for Tai Xiu game using ensemble methods",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
