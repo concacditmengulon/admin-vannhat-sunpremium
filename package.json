@@ -2,10 +2,10 @@
   "name": "vip-taixiu-bot",
   "version": "1.0.0",
   "description": "VIP TaiXiu Bot - Express API + Telegram Bot + Prediction VIP",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "axios": "^1.6.7",
