@@ -1,4 +1,4 @@
-const express = require("express");
+Const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 
@@ -667,18 +667,18 @@ function extractFeaturesForEnsemble(hist) {
   const last20 = lastN(rs, 20);
   const last50 = lastN(rs, 50);
 
-  const freqT_5 = last5.filter(r => r === 'T').length / (last5.length || 1);
-  const freqT_10 = last10.filter(r => r === 'T').length / (last10.length || 1);
-  const freqT_20 = last20.filter(r => r === 'T').length / (last20.length || 1);
-  const freqT_50 = last50.filter(r => r === 'T').length / (last50.length || 1);
-  const avg5 = avg(lastN(totals, 5)) / 18;
-  const avg10 = avg(lastN(totals, 10)) / 18;
-  const avg20 = avg(lastN(totals, 20)) / 18;
-  const run = Math.min(1, streakOfEnd(rs) / 15);
-  const switchRate12 = switchRate(lastN(rs, 12));
-  const switchRate20 = switchRate(lastN(rs, 20));
-  const parityRatio5 = lastN(totals,5).filter(t=>t%2===0).length / (last5.length || 1);
-  const parityRatio10 = lastN(totals,10).filter(t=>t%2===0).length / (last10.length || 1);
+  const f_freqT_5 = last5.filter(r => r === 'T').length / (last5.length || 1);
+  const f_freqT_10 = last10.filter(r => r === 'T').length / (last10.length || 1);
+  const f_freqT_20 = last20.filter(r => r === 'T').length / (last20.length || 1);
+  const f_freqT_50 = last50.filter(r => r === 'T').length / (last50.length || 1);
+  const f_avg5 = avg(lastN(totals, 5)) / 18;
+  const f_avg10 = avg(lastN(totals, 10)) / 18;
+  const f_avg20 = avg(lastN(totals, 20)) / 18;
+  const f_run = Math.min(1, streakOfEnd(rs) / 15);
+  const f_switch12 = switchRate(lastN(rs, 12));
+  const f_switch20 = switchRate(lastN(rs, 20));
+  const f_parity5 = lastN(totals,5).filter(t=>t%2===0).length / (last5.length || 1);
+  const f_parity10 = lastN(totals,10).filter(t=>t%2===0).length / (last10.length || 1);
   const markov = markovTransitionFeature(rs);
   const r1 = rulesPrediction(hist);
   const r2 = markovPrediction(hist);
@@ -688,15 +688,15 @@ function extractFeaturesForEnsemble(hist) {
   const r6 = smaCrossoverPrediction(hist);
   const r7 = rsiPrediction(hist);
 
-  const entropy10 = entropy(lastN(rs, 10));
-  const entropy20 = entropy(lastN(rs, 20));
-  const lag1 = autocorr(lastN(totals, 20), 1);
-  const lag2 = autocorr(lastN(totals, 20), 2);
-  const lag3 = autocorr(lastN(totals, 20), 3);
-  const avgDice5 = avg(lastN(dices, 5).flat()) / 3.5;
-  const highDiceFreq5 = lastN(dices, 5).flat().filter(d => d > 3).length / 15;
-  const avgDice10 = avg(lastN(dices, 10).flat()) / 3.5;
-  const highDiceFreq10 = lastN(dices, 10).flat().filter(d => d > 3).length / 30;
+  const f_entropy10 = entropy(lastN(rs, 10));
+  const f_entropy20 = entropy(lastN(rs, 20));
+  const f_lag1 = autocorr(lastN(totals, 20), 1);
+  const f_lag2 = autocorr(lastN(totals, 20), 2);
+  const f_lag3 = autocorr(lastN(totals, 20), 3);
+  const f_avgDice5 = avg(lastN(dices, 5).flat()) / 3.5;
+  const f_highDice5 = lastN(dices, 5).flat().filter(d => d > 3).length / 15;
+  const f_avgDice10 = avg(lastN(dices, 10).flat()) / 3.5;
+  const f_highDice10 = lastN(dices, 10).flat().filter(d => d > 3).length / 30;
 
   return {
     f_freqT_5, f_freqT_10, f_freqT_20, f_freqT_50,
@@ -715,7 +715,7 @@ function extractFeaturesForEnsemble(hist) {
     f_entropy10, f_entropy20,
     f_lag1, f_lag2, f_lag3,
     f_avgDice5, f_avgDice10,
-    f_highDice5: highDiceFreq5, f_highDice10: highDiceFreq10,
+    f_highDice5, f_highDice10,
   };
 }
 
