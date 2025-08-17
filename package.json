@@ -1,16 +1,14 @@
 {
-  "name": "taixiu-predictor",
+  "name": "ultimate-vip-predictor",
   "version": "1.0.0",
-  "description": "Ứng dụng dự đoán Tài Xỉu",
+  "description": "An ultimate VIP prediction service for a game.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.17.1",
-    "axios": "^1.7.2",
-    "cors": "^2.8.5"
-  },
-  "author": "",
-  "license": "ISC"
+    "axios": "^1.6.8",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
 }
