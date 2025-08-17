@@ -1,761 +1,877 @@
+require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 
-// Constants
 const PORT = process.env.PORT || 3000;
-const SOURCE_URL = "https://fullsrc-daynesun.onrender.com/api/taixiu/sunwin";
+const SOURCE_URL =
+  process.env.SOURCE_URL || "https://fullsrc-daynesun.onrender.com/api/taixiu/history";
 
-// Initialize the Express application
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ---------------------- UTILITIES SECTION ----------------------
-// These are functions that perform various calculations and data manipulations.
-function normResult(v) {
-  if (v == null) return null;
-  const s = String(v).trim().toLowerCase();
-  if (["t", "tai", "tài"].includes(s)) return "T";
-  if (["x", "xiu", "xỉu"].includes(s)) return "X";
+/* =======================
+ * Utils & Normalizers
+ * ======================= */
+function txFromResultOrTotal(result, total) {
+  if (result != null) {
+    const s = String(result).trim().toLowerCase();
+    if (["t", "tai", "tài"].includes(s)) return "T";
+    if (["x", "xiu", "xỉu"].includes(s)) return "X";
+    const n = parseInt(s, 10);
+    if (!Number.isNaN(n)) return n >= 11 ? "T" : "X";
+  }
+  if (typeof total === "number" && Number.isFinite(total)) {
+    return total >= 11 ? "T" : "X";
+  }
   return null;
 }
 
-function lastN(arr, n) {
-  if (!Array.isArray(arr) || n <= 0) return [];
-  return arr.slice(-n);
-}
+function normalizeRow(row) {
+  const session = Number(
+    row.session ?? row.phien ?? row.sid ?? row.SID ?? row.Phien ?? null
+  );
 
-function avg(arr) {
-  if (!arr || !arr.length) return 0;
-  return arr.reduce((a, b) => a + b, 0) / arr.length;
-}
+  let dice =
+    row.dice ??
+    row.xuc_xac ??
+    row.Xuc_xac ??
+    (row.Xuc_xac_1 && row.Xuc_xac_2 && row.Xuc_xac_3
+      ? `${row.Xuc_xac_1}-${row.Xuc_xac_2}-${row.Xuc_xac_3}`
+      : null);
 
-function sum(arr) {
-  if (!arr || !arr.length) return 0;
-  return arr.reduce((a, b) => a + b, 0);
-}
+  if (Array.isArray(dice)) dice = dice.join("-");
+  if (typeof dice === "string") dice = dice.replace(/[,\s]+/g, "-");
 
-function streakOfEnd(arr) {
-  if (!arr || !arr.length) return 0;
-  const last = arr[arr.length - 1];
-  let s = 1;
-  for (let i = arr.length - 2; i >= 0; i--) {
-    if (arr[i] === last) s++;
-    else break;
-  }
-  return s;
-}
+  const total = Number(
+    row.total ?? row.tong ?? row.Tong ?? row.sum ?? row.Sum ?? null
+  );
 
-function entropy(arr) {
-  if (!arr || !arr.length) return 0;
-  const pT = arr.filter(r => r === "T").length / arr.length;
-  const pX = 1 - pT;
-  return - (pT * Math.log2(pT + 1e-10) + pX * Math.log2(pX + 1e-10));
-}
+  const resultRaw =
+    row.result ?? row.ket_qua ?? row.Ket_qua ?? row.result_text ?? null;
 
-function autocorr(arr, lag = 1) {
-  if (!arr || arr.length < lag + 1) return 0;
-  const mean = avg(arr);
-  const var_ = sum(arr.map(v => (v - mean) ** 2)) / arr.length;
-  if (var_ === 0) return 0;
-  let cov = 0;
-  for (let i = lag; i < arr.length; i++) {
-    cov += (arr[i] - mean) * (arr[i - lag] - mean);
-  }
-  return cov / (arr.length - lag) / var_;
-}
+  const R = txFromResultOrTotal(resultRaw, total);
 
-function switchRate(arr) {
-  if (!arr || arr.length < 2) return 0.5;
-  let sw = 0;
-  for (let i = 1; i < arr.length; i++) {
-    if (arr[i] !== arr[i - 1]) sw++;
-  }
-  return sw / (arr.length - 1);
-}
-
-function variance(arr) {
-  if (!arr || arr.length < 2) return 0;
-  const mean = avg(arr);
-  return sum(arr.map(v => (v - mean) ** 2)) / (arr.length - 1);
-}
-
-function stdDev(arr) {
-  return Math.sqrt(variance(arr));
-}
-
-function zScoreLast(arr) {
-  if (!arr || arr.length < 2) return 0;
-  const mean = avg(arr);
-  const sd = stdDev(arr);
-  if (sd === 0) return 0;
-  return (arr[arr.length - 1] - mean) / sd;
-}
-
-function isTrendingUp(arr, window = 5) {
-  const sub = lastN(arr, window);
-  if (sub.length < 2) return false;
-  for (let i = 1; i < sub.length; i++) {
-    if (sub[i] <= sub[i - 1]) return false;
-  }
-  return true;
-}
-
-function isTrendingDown(arr, window = 5) {
-  const sub = lastN(arr, window);
-  if (sub.length < 2) return false;
-  for (let i = 1; i < sub.length; i++) {
-    if (sub[i] >= sub[i - 1]) return false;
-  }
-  return true;
-}
-
-function countPattern(seq, pattern) {
-  if (!seq || !pattern) return 0;
-  let count = 0;
-  for (let i = 0; i <= seq.length - pattern.length; i++) {
-    if (seq.slice(i, i + pattern.length).join('') === pattern) count++;
-  }
-  return count;
-}
-
-function movingAverage(arr, window) {
-  if (!arr || arr.length < window) return [];
-  let ma = [];
-  for (let i = window - 1; i < arr.length; i++) {
-    ma.push(avg(arr.slice(i - window + 1, i + 1)));
-  }
-  return ma;
-}
-
-function ema(arr, alpha) {
-  if (!arr || !arr.length) return [];
-  let emaArr = [arr[0]];
-  for (let i = 1; i < arr.length; i++) {
-    emaArr.push(alpha * arr[i] + (1 - alpha) * emaArr[i - 1]);
-  }
-  return emaArr;
-}
-
-function detectCycleLength(arr, maxLag = 20) {
-  let maxCorr = -Infinity;
-  let cycle = 1;
-  for (let lag = 1; lag <= maxLag; lag++) {
-    const corr = autocorr(arr, lag);
-    if (corr > maxCorr) {
-      maxCorr = corr;
-      cycle = lag;
-    }
-  }
-  return cycle;
-}
-
-function kurtosis(arr) {
-  if (!arr || arr.length < 4) return 0;
-  const mean = avg(arr);
-  const n = arr.length;
-  const m4 = sum(arr.map(v => (v - mean) ** 4)) / n;
-  const m2 = sum(arr.map(v => (v - mean) ** 2)) / n;
-  return m4 / (m2 ** 2) - 3;
-}
-
-function skewness(arr) {
-  if (!arr || arr.length < 3) return 0;
-  const mean = avg(arr);
-  const n = arr.length;
-  const m3 = sum(arr.map(v => (v - mean) ** 3)) / n;
-  const m2 = sum(arr.map(v => (v - mean) ** 2)) / n;
-  return m3 / (Math.sqrt(m2) ** 3);
-}
-
-function normalize(arr) {
-  if (!arr || !arr.length) return [];
-  const min = Math.min(...arr);
-  const max = Math.max(...arr);
-  if (max === min) return arr.map(() => 0.5);
-  return arr.map(v => (v - min) / (max - min));
-}
-
-function cumsum(arr) {
-  let cs = [0];
-  for (let i = 0; i < arr.length; i++) {
-    cs.push(cs[i] + arr[i]);
-  }
-  return cs.slice(1);
-}
-
-// ---------------------- ADVANCED PATTERN DETECTION SECTION ----------------------
-// Defines known bridge types with their patterns.
-const BRIDGE_TYPES = {
-  'bet_t': { pattern: 'TTTTT', desc: 'Cầu bệt Tài (long streak T)', follow: 'T' },
-  'bet_x': { pattern: 'XXXXX', desc: 'Cầu bệt Xỉu (long streak X)', follow: 'X' },
-  '1-1': { pattern: 'TXTXT', desc: 'Cầu 1-1 (zigzag)', follow: alternFollow },
-  '1-2_txx': { pattern: 'TXXTXX', desc: 'Cầu 1-2 starting T XX', follow: oneTwoFollow },
-  '1-2_xtt': { pattern: 'XTTXTT', desc: 'Cầu 1-2 starting X TT', follow: oneTwoFollow },
-  '2-1_tt x': { pattern: 'TTXTTX', desc: 'Cầu 2-1 TT X', follow: twoOneFollow },
-  '2-1_xx t': { pattern: 'XXTXXT', desc: 'Cầu 2-1 XX T', follow: twoOneFollow },
-  '2-2': { pattern: 'TTXXTTXX', desc: 'Cầu 2-2 TT XX', follow: twoTwoFollow },
-  '3-1_ttt x': { pattern: 'TTTXTTTX', desc: 'Cầu 3-1 TTT X', follow: threeOneFollow },
-  '3-1_xxx t': { pattern: 'XXXTXXXT', desc: 'Cầu 3-1 XXX T', follow: threeOneFollow },
-  '3-2_ttt xx': { pattern: 'TTTXXTTTXX', desc: 'Cầu 3-2 TTT XX', follow: threeTwoFollow },
-  '3-2_xxx tt': { pattern: 'XXXTTXXXTT', desc: 'Cầu 3-2 XXX TT', follow: threeTwoFollow },
-  '4-1': { pattern: 'TTTTXTTTTX', desc: 'Cầu 4-1', follow: fourOneFollow },
-  '4-2': { pattern: 'TTTTXXTTTTXX', desc: 'Cầu 4-2', follow: fourTwoFollow },
-  '1-3': { pattern: 'TXXXTXXX', desc: 'Cầu 1-3 T XXX', follow: oneThreeFollow },
-  '2-3': { pattern: 'TTXXXTTXXX', desc: 'Cầu 2-3 TT XXX', follow: twoThreeFollow },
-  '3-3': { pattern: 'TTTXXXTTTXXX', desc: 'Cầu 3-3 TTT XXX', follow: threeThreeFollow },
-  'fib_1-1-2': { pattern: 'TXTTXTTXT', desc: 'Fib-like 1-1-2', follow: fibFollow },
-  'fib_1-2-3': { pattern: 'TXXTTTXXTTT', desc: 'Fib-like 1-2-3', follow: fibFollow },
-};
-
-function alternFollow(lastSeq) {
-  return lastSeq[lastSeq.length - 1] === 'T' ? 'X' : 'T';
-}
-
-function oneTwoFollow(lastSeq) {
-  const last3 = lastN(lastSeq, 3).join('');
-  if (last3.endsWith('TX') || last3.endsWith('XT')) return 'X';
-  return 'T';
-}
-
-function twoOneFollow(lastSeq) {
-  const last3 = lastN(lastSeq, 3).join('');
-  if (last3 === 'TTX') return 'T';
-  if (last3 === 'XXT') return 'X';
-  return lastSeq[lastSeq.length - 1];
-}
-
-function twoTwoFollow(lastSeq) {
-  const last4 = lastN(lastSeq, 4).join('');
-  if (last4.endsWith('TTXX')) return 'T';
-  if (last4.endsWith('XXTT')) return 'X';
-  return alternFollow(lastSeq);
-}
-
-function threeOneFollow(lastSeq) {
-  const last4 = lastN(lastSeq, 4).join('');
-  if (last4 === 'TTTX') return 'T';
-  if (last4 === 'XXXT') return 'X';
-  return lastSeq[lastSeq.length - 1];
-}
-
-function threeTwoFollow(lastSeq) {
-  const last5 = lastN(lastSeq, 5).join('');
-  if (last5.endsWith('TTTXX')) return 'T';
-  if (last5.endsWith('XXXTT')) return 'X';
-  return twoTwoFollow(lastSeq);
-}
-
-function fourOneFollow(lastSeq) {
-  const last5 = lastN(lastSeq, 5).join('');
-  if (last5 === 'TTTTX') return 'T';
-  if (last5 === 'XXXXT') return 'X';
-  return threeOneFollow(lastSeq);
-}
-
-function fourTwoFollow(lastSeq) {
-  const last6 = lastN(lastSeq, 6).join('');
-  if (last6.endsWith('TTTTXX')) return 'T';
-  if (last6.endsWith('XXXXTT')) return 'X';
-  return threeTwoFollow(lastSeq);
-}
-
-function oneThreeFollow(lastSeq) {
-  const last4 = lastN(lastSeq, 4).join('');
-  if (last4.endsWith('TXXX')) return 'T';
-  if (last4.endsWith('XTTT')) return 'X';
-  return oneTwoFollow(lastSeq);
-}
-
-function twoThreeFollow(lastSeq) {
-  const last5 = lastN(lastSeq, 5).join('');
-  if (last5.endsWith('TTXXX')) return 'T';
-  if (last5.endsWith('XXTTT')) return 'X';
-  return twoTwoFollow(lastSeq);
-}
-
-function threeThreeFollow(lastSeq) {
-  const last6 = lastN(lastSeq, 6).join('');
-  if (last6.endsWith('TTTXXX')) return 'T';
-  if (last6.endsWith('XXXTTT')) return 'X';
-  return threeTwoFollow(lastSeq);
-}
-
-function fibFollow(lastSeq) {
-  const lengths = [1, 1, 2, 3, 5];
-  let pos = 0;
-  for (let len of lengths) {
-    pos += len;
-    if (pos > lastSeq.length) break;
-  }
-  return lastSeq[lastSeq.length - 1] === 'T' ? 'X' : 'T';
-}
-
-function detectDominantBridge(hist, window = 50) {
-  const rs = lastN(hist.map(h => h.ket_qua), window);
-  let maxCount = 0;
-  let dominant = null;
-  let explain = [];
-  for (const [key, info] of Object.entries(BRIDGE_TYPES)) {
-    const pat = info.pattern;
-    const count = countPattern(rs, pat.split(''));
-    if (count > maxCount) {
-      maxCount = count;
-      dominant = key;
-      explain = [`Phát hiện cầu ${info.desc} lặp ${count} lần`];
-    }
-  }
-  if (maxCount < 1) return { type: null, follow: null, conf: 0.5, why: ["Không phát hiện cầu rõ"] };
-  const info = BRIDGE_TYPES[dominant];
-  const pred = typeof info.follow === 'function' ? info.follow(rs) : info.follow;
-  const conf = 0.6 + Math.min(0.3, maxCount * 0.05);
-  return { type: dominant, pred, conf, why: explain };
-}
-
-function bridgeBasedPrediction(hist) {
-  const det = detectDominantBridge(hist, 30);
-  if (!det.type) {
-    return { pred: "T", conf: 0.5, why: det.why };
-  }
-  let why = det.why;
-  why.push(`Theo cầu ${det.type} → ${det.pred}`);
-  if (det.type.includes('bet')) {
-    why.push("Cầu bệt → theo tiếp streak");
-  } else if (det.type === '1-1') {
-    why.push("Cầu 1-1 → đảo chiều");
-  }
-  return { pred: det.pred, conf: det.conf, why };
-}
-
-// ---------------------- LAYER 0: LOAD & SHAPE ----------------------
-function shapeHistory(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter(r => r && r.Phien != null && r.Ket_qua != null)
-    .map(r => ({
-      phien: Number(r.Phien),
-      dice: [Number(r.Xuc_xac_1), Number(r.Xuc_xac_2), Number(r.Xuc_xac_3)],
-      tong: Number(r.Tong),
-      ket_qua: normResult(r.Ket_qua),
-      raw: r,
-    }))
-    .filter(r => r.ket_qua === "T" || r.ket_qua === "X")
-    .sort((a, b) => a.phien - b.phien);
-}
-
-// ---------------------- LAYER 1: RULES (Heuristic) ----------------------
-function rulesPrediction(hist) {
-  const results = hist.map(h => h.ket_qua);
-  const totals = hist.map(h => h.tong);
-  const last = results[results.length - 1];
-  const last3 = lastN(results, 3);
-  const last5 = lastN(results, 5);
-  const last10 = lastN(results, 10);
-  const last20 = lastN(results, 20);
-  const last5total = lastN(totals, 5);
-  const last10total = lastN(totals, 10);
-  const last20total = lastN(totals, 20);
-
-  let explain = [];
-  let score = { T: 0, X: 0 };
-
-  // Basic frequency rules
-  if (last10.filter(r => r === "T").length >= 7) {
-    score.T += 5;
-    explain.push("10 phiên gần nhất nghiêng Tài cực mạnh");
-  }
-  if (last10.filter(r => r === "X").length >= 7) {
-    score.X += 5;
-    explain.push("10 phiên gần nhất nghiêng Xỉu cực mạnh");
-  }
-  if (last5.filter(r => r === "T").length >= 4) {
-    score.T += 4;
-    explain.push("5 phiên gần nhất nghiêng Tài mạnh");
-  }
-  if (last5.filter(r => r === "X").length >= 4) {
-    score.X += 4;
-    explain.push("5 phiên gần nhất nghiêng Xỉu mạnh");
-  }
-
-  // Streak rules
-  if (last3.length === 3 && last3.every(r => r === "T")) {
-    score.X += 3.5;
-    explain.push("3 Tài liên tiếp → đảo Xỉu mạnh");
-  }
-  if (last3.length === 3 && last3.every(r => r === "X")) {
-    score.T += 3.5;
-    explain.push("3 Xỉu liên tiếp → đảo Tài mạnh");
-  }
-
-  // Zigzag for 1-1
-  const zigzag5 = last5.length === 5 && last5.every((v, i, arr) => i === 0 || v !== arr[i - 1]);
-  if (zigzag5) {
-    const pred = last === "T" ? "X" : "T";
-    score[pred] += 3;
-    explain.push("Cầu zigzag 5 phiên rõ ràng (1-1) → lặp tiếp");
-  }
-
-  const avg20 = avg(last20total);
-  if (avg20 >= 11.5) {
-    score.T += 4;
-    explain.push("Trung bình tổng 20 phiên cao (≥11.5) → Tài mạnh");
-  } else if (avg20 <= 9.5) {
-    score.X += 4;
-    explain.push("Trung bình tổng 20 phiên thấp (≤9.5) → Xỉu mạnh");
-  }
-
-  const avg10 = avg(last10total);
-  if (avg10 >= 11.5) {
-    score.T += 3.5;
-    explain.push("Trung bình tổng 10 phiên cao (≥11.5) → Tài mạnh");
-  } else if (avg10 <= 9.5) {
-    score.X += 3.5;
-    explain.push("Trung bình tổng 10 phiên thấp (≤9.5) → Xỉu mạnh");
-  }
-  
-  // Parity rules
-  const parity10 = lastN(totals, 10).length ? lastN(totals, 10).filter(t => t % 2 === 0).length / lastN(totals, 10).length : 0;
-  if (parity10 >= 0.7) {
-    score.X += 2.5;
-    explain.push("Tỷ lệ chẵn cao trong 10 phiên → Xỉu bias");
-  } else if (parity10 <= 0.3) {
-    score.T += 2.5;
-    explain.push("Tỷ lệ lẻ cao trong 10 phiên → Tài bias");
-  }
-
-  const s = streakOfEnd(results);
-  if (s >= 5 && s < 8) {
-    const opp = last === "T" ? "X" : "T";
-    score[opp] += 4;
-    explain.push(`Chuỗi ${s} → đảo chiều mạnh`);
-  }
-  if (s >= 8 && s < 12) {
-    score[last] += 3;
-    explain.push(`Chuỗi dài ${s} → theo chiều bệt`);
-  }
-
-  let pred = null;
-  let conf = 0.7;
-  if (score.T > score.X + 3) {
-    pred = "T";
-    conf = 0.75 + Math.min(0.2, (score.T - score.X) * 0.05);
-    explain.push("Score nghiêng Tài mạnh");
-  } else if (score.X > score.T + 3) {
-    pred = "X";
-    conf = 0.75 + Math.min(0.2, (score.X - score.T) * 0.05);
-    explain.push("Score nghiêng Xỉu mạnh");
-  } else {
-    pred = last === "T" ? "X" : "T";
-    conf = 0.65;
-    explain.push("Không nghiêng rõ → đảo chiều default");
-  }
-
-  return { pred, conf: Math.min(0.98, conf), why: explain };
-}
-
-// ---------------------- LAYER 2: MODEL-BASED ----------------------
-function markovPrediction(hist) {
-  const rs = hist.map(h => h.ket_qua);
-  const use = lastN(rs, 300);
-  let tt = 1, tx = 1, xt = 1, xx = 1;
-  for (let i = 1; i < use.length; i++) {
-    const prev = use[i - 1];
-    const cur = use[i];
-    if (prev === "T" && cur === "T") tt++;
-    if (prev === "T" && cur === "X") tx++;
-    if (prev === "X" && cur === "T") xt++;
-    if (prev === "X" && cur === "X") xx++;
-  }
-  const last = use.length ? use[use.length - 1] : null;
-  let pT = 0.5, pX = 0.5, why = [];
-  if (last === "T") {
-    const s = tt + tx; pT = tt / s; pX = tx / s;
-  } else if (last === "X") {
-    const s = xt + xx; pT = xt / s; pX = xx / s;
-  } else {
-    return { pred: "T", conf: 0.5, why: ["Không đủ dữ liệu cho Markov"] };
-  }
-  const pred = pT >= pX ? "T" : "X";
-  const conf = Math.max(pT, pX) + 0.1;
-  why.push(`Markov dự đoán P(T)=${pT.toFixed(2)}`);
-  return { pred, conf: Math.min(0.98, 0.65 + (conf - 0.5) * 0.8), why, pT, pX };
-}
-
-function recentPatternPrediction(hist) {
-  const rs = hist.map(h => h.ket_qua);
-  const use = lastN(rs, 50);
-  let why = [];
-
-  const patCounts = (len) => {
-    const o = {};
-    for (let i = 0; i <= use.length - len; i++) {
-      const k = use.slice(i, i + len).join("");
-      o[k] = (o[k] || 0) + 1;
-    }
-    return o;
-  };
-
-  const pat5Counts = patCounts(5);
-  const pat4Counts = patCounts(4);
-  const pat3Counts = patCounts(3);
-  function bestEntry(obj) {
-    const ent = Object.entries(obj);
-    if (!ent.length) return null;
-    return ent.sort((a, b) => b[1] - a[1])[0];
-  }
-
-  const b5 = bestEntry(pat5Counts);
-  const b4 = bestEntry(pat4Counts);
-  const b3 = bestEntry(pat3Counts);
-  let pred = null;
-  let conf = 0.6;
-  if (b5 && b5[1] >= 2) {
-    const patt = b5[0]; pred = patt[patt.length - 1]; conf = 0.8 + Math.min(0.15, (b5[1] - 2) * 0.05); why.push(`Pattern 5 lặp: ${patt} x${b5[1]}`);
-  } else if (b4 && b4[1] >= 3) {
-    const patt = b4[0]; pred = patt[patt.length - 1]; conf = 0.75 + Math.min(0.12, (b4[1] - 3) * 0.04); why.push(`Pattern 4 lặp: ${patt} x${b4[1]}`);
-  } else if (b3 && b3[1] >= 5) {
-    const patt = b3[0]; pred = patt[patt.length - 1]; conf = 0.72 + Math.min(0.1, (b3[1] - 5) * 0.03); why.push(`Pattern 3 lặp: ${patt} x${b3[1]}`);
-  } else {
-    const weights = use.map((_, i) => Math.pow(1.3, i));
-    const tScore = use.reduce((s, v, i) => s + (v === "T" ? weights[i] : 0), 0);
-    const xScore = use.reduce((s, v, i) => s + (v === "X" ? weights[i] : 0), 0);
-    pred = tScore >= xScore ? "T" : "X";
-    const dom = Math.abs(tScore - xScore) / (tScore + xScore || 1);
-    conf = 0.65 + Math.min(0.3, dom * 0.9);
-    why.push("Trọng số gần đây nghiêng " + (pred === "T" ? "Tài" : "Xỉu"));
-  }
-  return { pred, conf, why };
-}
-
-function breakStreakFilter(hist) {
-  const rs = hist.map(h => h.ket_qua);
-  const s = streakOfEnd(rs);
-  const cur = rs[rs.length - 1];
-  let breakProb = 0;
-  if (s >= 12) breakProb = 0.9;
-  else if (s >= 10) breakProb = 0.85;
-  else if (s >= 8) breakProb = 0.8;
-  else if (s >= 6) breakProb = 0.75;
-  else if (s >= 4) breakProb = 0.65;
-  else if (s >= 3) breakProb = 0.6;
-  else breakProb = 0.5;
-
-  if (breakProb >= 0.65) {
-    const pred = cur === "T" ? "X" : "T";
-    return {
-      pred,
-      conf: Math.min(0.98, breakProb + 0.1),
-      why: [`Chuỗi ${s} → xác suất bẻ cầu ${Math.round(breakProb * 100)}%`],
-    };
-  }
   return {
-    pred: cur,
-    conf: 0.65 + (1 - breakProb),
-    why: [`Chuỗi ${s} chưa đủ để bẻ → theo cầu bệt`],
+    session: Number.isFinite(session) ? session : null,
+    dice: dice ?? null,
+    total: Number.isFinite(total) ? total : null,
+    R, // 'T' | 'X' | null
+    rawResult: resultRaw ?? null
   };
 }
 
-// ---------------------- ENSEMBLE ----------------------
-function ensemblePredict(hist) {
-  if (!hist || hist.length < 15) {
-    return { pred: hist && hist.length ? hist[hist.length - 1].ket_qua : "T", conf: 0.6, why: ["Không đủ dữ liệu, fallback"] };
-  }
-  const r1 = rulesPrediction(hist);
-  const r2 = markovPrediction(hist);
-  const r3 = recentPatternPrediction(hist);
-  const r4 = breakStreakFilter(hist);
-  const r5 = bridgeBasedPrediction(hist);
-
-  const votes = [
-    { p: r1.pred, c: r1.conf, why: r1.why || [] },
-    { p: r2.pred, c: r2.conf, why: r2.why || [] },
-    { p: r3.pred, c: r3.conf, why: r3.why || [] },
-    { p: r4.pred, c: r4.conf, why: r4.why || [] },
-    { p: r5.pred, c: r5.conf, why: r5.why || [] },
-  ];
-
-  const scoreT = sum(votes.map(v => v.p === 'T' ? v.c : 0));
-  const scoreX = sum(votes.map(v => v.p === 'X' ? v.c : 0));
-  const pred = scoreT >= scoreX ? 'T' : 'X';
-  const rawConf = Math.max(scoreT, scoreX) / (scoreT + scoreX || 1);
-  const agree = votes.filter(v => v.p === pred).length / votes.length;
-  const conf = Math.min(0.99, 0.65 + (rawConf - 0.5) * 0.8 + agree * 0.2);
-  const why = votes.filter(v => v.p === pred).flatMap(v => v.why).concat([`Đồng thuận ${Math.round(agree*100)}%`]);
-
-  return { pred, conf, why, pieces: { votes } };
+function riskFromConfidence(c) {
+  if (c >= 0.75) return "thấp";
+  if (c >= 0.6) return "trung bình";
+  return "cao";
 }
 
-// ---------------------- BACKTEST + KELLY ----------------------
-function overallBacktest(hist, lookback = 300) {
-  const n = Math.min(lookback, hist.length - 1);
-  if (n <= 30) return { acc: 0, sample: n, bankroll: null, roi: 0, maxDrawdown: 0, details: [] };
-  let correct = 0;
-  let bankroll = 1000;
-  let peak = bankroll;
-  let maxDrawdown = 0;
-  for (let i = hist.length - 1 - n; i < hist.length - 1; i++) {
-    const past = hist.slice(0, i + 1);
-    const res = ensemblePredict(past);
-    const actualNext = hist[i + 1].ket_qua;
-    if (res.pred === actualNext) {
-      correct++;
+function txLabel(t) {
+  return t === "T" ? "Tài" : "Xỉu";
+}
+
+/* =======================
+ * “Engines” mô phỏng theo spec
+ * ======================= */
+
+/** AnomalyDetectionEngine — đơn giản: phát hiện outlier tổng & lặp bất thường */
+class AnomalyDetectionEngine {
+  analyze(newBatch, historical) {
+    const details = [];
+    let count = 0;
+
+    // Tính trung bình & độ lệch chuẩn trên lịch sử (map T=1, X=0 để làm minh họa)
+    const encode = (x) => (x === "T" ? 1 : 0);
+    const histEnc = historical.map(encode);
+    const mean =
+      histEnc.reduce((a, b) => a + b, 0) / Math.max(histEnc.length, 1);
+    const sd = Math.sqrt(
+      histEnc.reduce((a, b) => a + Math.pow(b - mean, 2), 0) /
+        Math.max(histEnc.length, 1)
+    );
+
+    newBatch.forEach((x, i) => {
+      const v = encode(x);
+      const z = sd > 0 ? Math.abs((v - mean) / sd) : 0;
+      if (z > 2.5) {
+        count++;
+        details.push({ idx: i, value: x, z });
+      }
+    });
+
+    return { count, details };
+  }
+}
+
+/** RealTimePatternEngine — tìm các motif gần cuối và thống kê next-step */
+class RealTimePatternEngine {
+  extract(batch, historical) {
+    const ctxLen = Math.min(5, Math.max(2, Math.floor(historical.length / 50)));
+    const ctx = [...historical.slice(-ctxLen), ...batch].slice(-ctxLen);
+    if (ctx.length < 2) return { context: ctx, stats: null };
+
+    const hist = historical.join("");
+    const key = ctx.join("");
+    let hitsT = 0,
+      hitsX = 0;
+    for (let i = 0; i + ctx.length < hist.length; i++) {
+      if (hist.slice(i, i + ctx.length) === key) {
+        const nxt = hist[i + ctx.length];
+        if (nxt === "T") hitsT++;
+        if (nxt === "X") hitsX++;
+      }
     }
+    const total = hitsT + hitsX;
+    const pT = total > 0 ? hitsT / total : 0.5;
+    return { context: ctx, stats: { hitsT, hitsX, total, pT } };
   }
-  const acc = correct / n;
-  return { acc, sample: n, bankroll, maxDrawdown, details: [] };
 }
 
-function kellyBetSize(confidence, payout = 0.95, bankroll = 1000, baseUnit = 1) {
-  const p = Math.max(0.01, Math.min(0.99, confidence));
-  const b = payout;
-  const q = 1 - p;
-  const k = (b * p - q) / b;
-  if (k <= 0) return baseUnit;
-  const frac = Math.min(0.2, k);
-  return Math.max(1, Math.round(bankroll * frac));
-}
-
-// ---------------------- RISK LEVEL ----------------------
-function riskLevel(conf, hist) {
-  const rs = hist.map(h => h.ket_qua);
-  const last30 = lastN(rs, 30);
-  let switches = 0;
-  for (let i = 1; i < last30.length; i++) {
-    if (last30[i] !== last30[i - 1]) switches++;
+/** WeightOptimizationEngine — nhẹ nhàng tinh chỉnh theo gần đây */
+class WeightOptimizationEngine {
+  calculateNewWeights(perf, oldW) {
+    // Nếu 10 dự đoán gần đây tốt hơn 0.6 thì tăng nhẹ DeepSequence/Hybrid
+    let sum = 0;
+    Object.values(oldW).forEach((v) => (sum += v));
+    const base = { ...oldW };
+    if (perf.accuracy && perf.accuracy > 0.6) {
+      base.deepSequenceModel += 0.02;
+      base.hybridAttentionModel += 0.01;
+      base.probabilisticGraphicalModel += 0.005;
+      base.temporalFusionModel -= 0.015;
+      base.quantumInspiredNetwork -= 0.02;
+    }
+    // Chuẩn hóa sum=1
+    let s = 0;
+    Object.values(base).forEach((v) => (s += v));
+    Object.keys(base).forEach((k) => (base[k] = Math.max(0, base[k] / s)));
+    return base;
   }
-  const switchRate_ = last30.length > 1 ? switches / (last30.length - 1) : 0;
-  const s = streakOfEnd(rs);
-  const ent = entropy(lastN(rs, 30));
-
-  let risk = 1 - conf;
-  risk += switchRate_ * 0.25;
-  if (s >= 8) risk += 0.15;
-  if (ent > 0.95) risk += 0.2;
-
-  if (risk <= 0.25) return "Rất Thấp";
-  if (risk <= 0.35) return "Thấp";
-  if (risk <= 0.5) return "Trung bình";
-  if (risk <= 0.65) return "Cao";
-  return "Rất Cao";
 }
 
-// ---------------------- API ROUTES ----------------------
-app.get("/health", (_, res) => res.json({ ok: true, time: new Date().toISOString() }));
+/** AdvancedTrendEngine — phân tích xu hướng: streak, alternation, distribution, totals */
+class AdvancedTrendEngine {
+  analyze(historical, realtime, perf) {
+    const seq = [...historical, ...realtime];
+    const n = seq.length;
 
-app.get("/api/du-doan", async (req, res) => {
-  try {
-    const { data } = await axios.get(SOURCE_URL, { timeout: 15000 });
-    const hist = shapeHistory(data);
-    if (!hist.length) return res.status(502).json({ error: "Không lấy được dữ liệu nguồn" });
+    // streak hiện tại
+    let curLen = 1;
+    for (let i = n - 2; i >= 0 && seq[i] === seq[n - 1]; i--) curLen++;
 
-    const last = hist[hist.length - 1];
-    const { pred, conf, why } = ensemblePredict(hist);
-    const bt = overallBacktest(hist, 300);
-    const tyLe = Math.round((bt.acc || 0) * 100);
-    const kelly = kellyBetSize(conf, 0.95, 1000, 1);
+    // alternation gần đây
+    const altWindow = Math.min(40, n - 1);
+    let flip = 0;
+    for (let i = n - altWindow; i < n; i++) {
+      if (i > 0 && seq[i] !== seq[i - 1]) flip++;
+    }
+    const altRatio = altWindow > 0 ? flip / altWindow : 0.5;
 
-    const out = {
-      phien: last.phien,
-      xuc_xac: `${last.dice[0]}-${last.dice[1]}-${last.dice[2]}`,
-      tong: last.tong,
-      ket_qua: last.ket_qua === "T" ? "Tài" : "Xỉu",
-      phien_sau: last.phien + 1,
-      du_doan: pred === "T" ? "Tài" : "Xỉu",
-      ty_le_thanh_cong: `${tyLe}% (backtest ${bt.sample} mẫu)`,
-      do_tin_cay: `${Math.round(conf * 100)}%`,
-      goi_y_cuoc_kelly: kelly,
-      giai_thich: Array.isArray(why) ? why.join(" | ") : why,
-      muc_do_rui_ro: riskLevel(conf, hist),
+    // phân phối gần
+    const win = Math.min(80, n);
+    const slice = seq.slice(-win);
+    const tCnt = slice.filter((x) => x === "T").length;
+    const ratioT = win > 0 ? tCnt / win : 0.5;
+
+    return {
+      streakDir: seq[n - 1],
+      streakLen: curLen,
+      altRatio,
+      ratioT,
+      perfHint: perf?.accuracy ?? 0
+    };
+  }
+}
+
+/** SmartEnsembleEngine — trộn các xác suất thành p(T) cuối */
+class SmartEnsembleEngine {
+  combinePredictions(analysis, trend, weights, threshold = 0.72) {
+    const clamp = (x) => Math.max(0.05, Math.min(0.95, x));
+    const pT_deep = clamp(analysis.deepSequenceModel?.pT ?? 0.5);
+    const pT_hatt = clamp(analysis.hybridAttentionModel?.pT ?? 0.5);
+    const pT_quant = clamp(analysis.quantumInspiredNetwork?.pT ?? 0.5);
+    const pT_temp = clamp(analysis.temporalFusionModel?.pT ?? 0.5);
+    const pT_prob = clamp(analysis.probabilisticGraphicalModel?.pT ?? 0.5);
+
+    const pT =
+      pT_deep * (weights.deepSequenceModel ?? 0.28) +
+      pT_hatt * (weights.hybridAttentionModel ?? 0.25) +
+      pT_quant * (weights.quantumInspiredNetwork ?? 0.22) +
+      pT_temp * (weights.temporalFusionModel ?? 0.15) +
+      pT_prob * (weights.probabilisticGraphicalModel ?? 0.1);
+
+    // confidence dựa theo |pT-0.5|, mức phủ dữ liệu (proxy), và tính ổn định trend
+    const dist = Math.abs(pT - 0.5) * 2; // 0..1
+    const coverage =
+      (analysis.coverageMarkov ?? 0.5) * 0.35 +
+      (analysis.coverageNgram ?? 0.5) * 0.25 +
+      (analysis.coverageAlt ?? 0.5) * 0.15 +
+      (analysis.coverageDist ?? 0.5) * 0.15 +
+      (analysis.coverageTotals ?? 0.5) * 0.10;
+
+    const stability =
+      (trend.streakLen >= 3 ? 0.15 : 0) +
+      (trend.altRatio > 0.55 || trend.altRatio < 0.45 ? 0.1 : 0);
+
+    const confidence = Math.max(
+      0.5,
+      Math.min(0.95, 0.6 * dist + 0.3 * coverage + 0.1 * stability)
+    );
+
+    return {
+      choice: pT >= 0.5 ? "T" : "X",
+      pT,
+      confidence,
+      passedThreshold: pT >= threshold || pT <= 1 - threshold
+    };
+  }
+}
+
+/** PredictionStability — xem p của các mô-đun có hội tụ không */
+class PredictionStability {
+  assess(pred, recent) {
+    if (!recent || recent.length < 3) return "initializing";
+    const avgP = recent.reduce((a, b) => a + (b.pT ?? 0.5), 0) / recent.length;
+    const varP =
+      recent.reduce((a, b) => a + Math.pow((b.pT ?? 0.5) - avgP, 2), 0) /
+      recent.length;
+    return varP < 0.01 ? "stable" : "volatile";
+  }
+}
+
+/** PerformanceMetricsEngine — proxy accuracy dựa backtest gần */
+class PerformanceMetricsEngine {
+  calculate(lastPreds) {
+    // lastPreds: [{choice, real? maybe}, ...] — ở đây không có ground-truth trực tiếp ⇒ mô phỏng đơn giản
+    const k = lastPreds.length;
+    const acc = 0.5 + Math.min(0.15, k * 0.005); // giữ ổn định 0.5~0.65 (không ảo tưởng)
+    return { accuracy: acc, precision: acc * 0.98, recall: acc * 0.98 };
+  }
+}
+
+/* =======================
+ * Sub-models (mô phỏng)
+ * ======================= */
+
+/** DeepSequencePredictor — n-gram tới 5, Markov 1-bước */
+class DeepSequencePredictor {
+  constructor() {
+    this.memoryCells = [];
+    this.contextSize = 5;
+  }
+  async train(data, lr) {
+    this.memoryCells = this.memoryCells.slice(-20).concat([Date.now()]);
+    return { updatedMemory: this.memoryCells };
+  }
+  async analyze({ historical }) {
+    const seq = historical.join("");
+    const n = seq.length;
+    const ctxLen = Math.min(this.contextSize, Math.max(2, Math.floor(n / 80)));
+    const ctx = seq.slice(-ctxLen);
+    let hitsT = 0,
+      hitsX = 0;
+    for (let i = 0; i + ctx.length < n; i++) {
+      if (seq.slice(i, i + ctx.length) === ctx) {
+        const nxt = seq[i + ctx.length];
+        if (nxt === "T") hitsT++;
+        if (nxt === "X") hitsX++;
+      }
+    }
+    const total = hitsT + hitsX;
+    const pT = total > 0 ? hitsT / total : 0.5;
+
+    // thêm Markov 1-bước
+    let TT = 0,
+      TX = 0,
+      XT = 0,
+      XX = 0;
+    for (let i = 1; i < historical.length; i++) {
+      const a = historical[i - 1],
+        b = historical[i];
+      if (a === "T" && b === "T") TT++;
+      if (a === "T" && b === "X") TX++;
+      if (a === "X" && b === "T") XT++;
+      if (a === "X" && b === "X") XX++;
+    }
+    const last = historical[historical.length - 1];
+    const pT_after_T = TT + TX > 0 ? TT / (TT + TX) : 0.5;
+    const pT_after_X = XT + XX > 0 ? XT / (XT + XX) : 0.5;
+
+    const pMarkov = last === "T" ? pT_after_T : pT_after_X;
+
+    const pBlend = 0.6 * pT + 0.4 * pMarkov;
+    return {
+      pT: pBlend,
+      context: ctx,
+      ngramStats: { hitsT, hitsX, total },
+      markov: { pT_after_T, pT_after_X },
+      modelType: "deepSequence"
+    };
+  }
+}
+
+/** HybridAttentionPredictor — attention thời gian + attention đặc trưng */
+class HybridAttentionPredictor {
+  async train() {
+    return {};
+  }
+  extractFeatures(historical) {
+    const n = historical.length;
+    // streak
+    let len = 1;
+    for (let i = n - 2; i >= 0 && historical[i] === historical[n - 1]; i--)
+      len++;
+    // alternation
+    const W = Math.min(40, n - 1);
+    let flip = 0;
+    for (let i = n - W; i < n; i++) if (i > 0 && historical[i] !== historical[i - 1]) flip++;
+    const altRatio = W > 0 ? flip / W : 0.5;
+    // distribution
+    const win = Math.min(80, n);
+    const slice = historical.slice(-win);
+    const tCnt = slice.filter((x) => x === "T").length;
+    const ratioT = win > 0 ? tCnt / win : 0.5;
+    return { streakLen: len, streakDir: historical[n - 1], altRatio, ratioT, win };
+  }
+  async analyze({ historical }) {
+    const f = this.extractFeatures(historical);
+    // attention thời gian: trọng số cao hơn cho gần đây
+    // p(T) từ đặc trưng:
+    let pT = 0.5;
+    // streak: nếu đang Tài dài → nghiêng T; nếu Xỉu dài → nghiêng X
+    if (f.streakDir === "T") pT += Math.min(0.2, f.streakLen * 0.02);
+    else pT -= Math.min(0.2, f.streakLen * 0.02);
+
+    // alternation cao → dễ đảo chiều so với phiên cuối
+    if (f.altRatio > 0.55) pT += f.streakDir === "T" ? -0.08 : 0.08;
+    else if (f.altRatio < 0.45) pT += f.streakDir === "T" ? 0.05 : -0.05;
+
+    // distribution: lệch > 55% thì thiên hướng hồi quy nhẹ
+    if (f.ratioT > 0.55) pT -= 0.06 * (f.ratioT - 0.55) * 10;
+    if (f.ratioT < 0.45) pT += 0.06 * (0.45 - f.ratioT) * 10;
+
+    pT = Math.max(0.05, Math.min(0.95, pT));
+
+    return { pT, features: f, modelType: "hybridAttention" };
+  }
+}
+
+/** QuantumInspiredNetwork — giao thoa giữa Momentum & Mean-reversion */
+class QuantumInspiredNetwork {
+  async train() {
+    return {};
+  }
+  async analyze({ historical }) {
+    const n = historical.length;
+    // momentum prob ~ xác suất giữ chiều sau streak ≥ 2
+    let mom = 0.5;
+    if (n >= 10) {
+      let keep = 0,
+        tot = 0;
+      let i = 0;
+      while (i < n) {
+        let j = i;
+        while (j + 1 < n && historical[j + 1] === historical[i]) j++;
+        const L = j - i + 1;
+        if (L >= 2 && j + 1 < n) {
+          keep += historical[j + 1] === historical[i] ? 1 : 0;
+          tot++;
+        }
+        i = j + 1;
+      }
+      mom = tot > 0 ? keep / tot : 0.5;
+    }
+    // mean-reversion prob ~ xác suất đảo chiều sau chuỗi ≥ 2
+    const mr = 1 - mom;
+
+    // pha giao thoa theo alternation gần đây
+    let alt = 0.5;
+    for (let i = 1; i < n; i++) alt += historical[i] !== historical[i - 1] ? 1 : 0;
+    alt = n > 1 ? (alt - 0.5) / (n - 1) : 0.5; // ~ tỷ lệ flip
+
+    const phi = (alt - 0.5) * Math.PI; // -π/2..π/2
+    const pBlend = Math.max(
+      0.05,
+      Math.min(0.95, mom + mr + 2 * Math.sqrt(mom * mr) * Math.cos(phi) - 0.5)
+    );
+    // map về 0..1
+    const pT =
+      historical[n - 1] === "T"
+        ? pBlend
+        : 1 - pBlend;
+
+    return { pT, components: { mom, mr, phi }, modelType: "quantumInspired" };
+  }
+}
+
+/** TemporalFusionPredictor — gộp nhiều cửa sổ thời gian */
+class TemporalFusionPredictor {
+  async train() { return {}; }
+  probFromWindow(seq, w) {
+    if (seq.length < w + 1) return 0.5;
+    const slice = seq.slice(-w);
+    // đơn giản: nếu gần đây T nhiều hơn → pT tăng nhẹ
+    const tCnt = slice.filter((x) => x === "T").length;
+    return 0.5 + (tCnt / w - 0.5) * 0.5; // giảm biên
+  }
+  async analyze({ historical }) {
+    const p8 = this.probFromWindow(historical, 8);
+    const p20 = this.probFromWindow(historical, 20);
+    const p60 = this.probFromWindow(historical, 60);
+    const pT = 0.45 * p8 + 0.35 * p20 + 0.20 * p60;
+    return { pT, windows: { p8, p20, p60 }, modelType: "temporalFusion" };
+  }
+}
+
+/** AdvancedProbabilisticModel — Naive-Bayes nhẹ với feature discretes */
+class AdvancedProbabilisticModel {
+  async train() { return {}; }
+  async analyze({ historical }) {
+    const n = historical.length;
+    const last = historical[n - 1];
+    // features: lastSide, streakLen≥3, altHigh
+    let streak = 1;
+    for (let i = n - 2; i >= 0 && historical[i] === last; i--) streak++;
+    let flip = 0;
+    for (let i = 1; i < Math.min(n, 40); i++)
+      if (historical[n - i] !== historical[n - i - 1]) flip++;
+    const altHigh = (flip / Math.min(39, n - 1)) > 0.55;
+
+    // Likelihoods (heuristic)
+    let logOdds = 0; // log(P(T)/P(X))
+    if (last === "T") logOdds += Math.log(1.05);
+    else logOdds -= Math.log(1.05);
+    if (streak >= 3) logOdds += last === "T" ? Math.log(1.08) : -Math.log(1.08);
+    if (altHigh) logOdds += last === "T" ? -Math.log(1.12) : Math.log(1.12);
+
+    const odds = Math.exp(logOdds);
+    const pT = odds / (1 + odds);
+    return { pT, features: { last, streak, altHigh }, modelType: "probGraph" };
+  }
+}
+
+/* =======================
+ * AdvancedTaiXiuPredictor (theo spec)
+ * ======================= */
+class AdvancedTaiXiuPredictor {
+  constructor() {
+    this.historicalData = [];
+    this.realTimeData = [];
+    this.metaData = { lastUpdate: null, dataQuality: 1.0, anomalyCount: 0 };
+
+    this.models = this.initializeAdvancedModels();
+    this.performanceMetrics = {
+      accuracy: 0, precision: 0, recall: 0, last10Predictions: []
+    };
+    this.config = {
+      dataWindow: 500,
+      predictionThreshold: 0.72,
+      adaptiveLearningRate: 0.01,
+      ensembleWeights: this.calculateInitialWeights()
     };
 
-    res.json(out);
+    // engines
+    this.anomalyEngine = new AnomalyDetectionEngine();
+    this.patternEngine = new RealTimePatternEngine();
+    this.weightEngine = new WeightOptimizationEngine();
+    this.trendEngine = new AdvancedTrendEngine();
+    this.ensembleEngine = new SmartEnsembleEngine();
+    this.stabilityEngine = new PredictionStability();
+    this.metricsEngine = new PerformanceMetricsEngine();
+  }
+
+  initializeAdvancedModels() {
+    return {
+      deepSequenceModel: new DeepSequencePredictor(),
+      hybridAttentionModel: new HybridAttentionPredictor(),
+      quantumInspiredNetwork: new QuantumInspiredNetwork(),
+      temporalFusionModel: new TemporalFusionPredictor(),
+      probabilisticGraphicalModel: new AdvancedProbabilisticModel()
+    };
+  }
+  calculateInitialWeights() {
+    return {
+      deepSequenceModel: 0.28,
+      hybridAttentionModel: 0.25,
+      quantumInspiredNetwork: 0.22,
+      temporalFusionModel: 0.15,
+      probabilisticGraphicalModel: 0.10
+    };
+  }
+
+  preprocessData(data) {
+    return data
+      .map((x) => (x === "T" || x === "X" ? x : null))
+      .filter(Boolean);
+  }
+
+  detectAnomalies(data) {
+    if (this.historicalData.length < 50) return { count: 0, details: [] };
+    return this.anomalyEngine.analyze(data, this.historicalData);
+  }
+
+  updateDataQuality(anomalyReport) {
+    const denom = Math.max(this.historicalData.length, 1);
+    const ratio = anomalyReport.count / denom;
+    this.metaData.dataQuality = Math.max(0.1, 1 - ratio * 2);
+  }
+
+  extractRealTimePatterns(data) {
+    return this.patternEngine.extract(data, this.historicalData);
+  }
+
+  async adaptiveModelTraining() {
+    const trainingData = {
+      historical: this.historicalData,
+      realTime: this.realTimeData,
+      meta: this.metaData
+    };
+    await Promise.all(
+      Object.values(this.models).map((m) =>
+        m.train(trainingData, this.config.adaptiveLearningRate)
+      )
+    );
+    // điều chỉnh trọng số
+    this.config.ensembleWeights = this.weightEngine.calculateNewWeights(
+      this.performanceMetrics,
+      this.config.ensembleWeights
+    );
+  }
+
+  async updateData(newData) {
+    try {
+      const processed = this.preprocessData(newData);
+      const anomalyReport = this.detectAnomalies(processed);
+      this.metaData.anomalyCount += anomalyReport.count;
+      this.updateDataQuality(anomalyReport);
+
+      this.historicalData = [...this.historicalData, ...processed].slice(
+        -this.config.dataWindow
+      );
+
+      this.realTimeData = this.extractRealTimePatterns(processed);
+
+      await this.adaptiveModelTraining();
+      this.metaData.lastUpdate = new Date();
+      return { success: true, anomalyReport };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  crossModelAnalysis(individual) {
+    // độ lệch giữa mô hình
+    const arr = [
+      individual.deepSequenceModel?.pT ?? 0.5,
+      individual.hybridAttentionModel?.pT ?? 0.5,
+      individual.quantumInspiredNetwork?.pT ?? 0.5,
+      individual.temporalFusionModel?.pT ?? 0.5,
+      individual.probabilisticGraphicalModel?.pT ?? 0.5
+    ];
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    const varP = arr.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / arr.length;
+    return { mean, varP };
+  }
+
+  async multilayerAnalysis() {
+    const analysis = {};
+    const promises = Object.entries(this.models).map(async ([name, model]) => {
+      analysis[name] = await model.analyze({
+        historical: this.historicalData,
+        realTime: this.realTimeData?.context ?? []
+      });
+    });
+    await Promise.all(promises);
+
+    analysis.crossModel = this.crossModelAnalysis(analysis);
+
+    // coverage proxies
+    analysis.coverageMarkov = Math.min(1, this.historicalData.length / 120);
+    analysis.coverageNgram = Math.min(1, this.historicalData.length / 200);
+    analysis.coverageAlt = Math.min(1, this.historicalData.length / 60);
+    analysis.coverageDist = Math.min(1, this.historicalData.length / 80);
+    analysis.coverageTotals = 0.7; // không có totals trong class này ⇒ đặt cố định
+
+    return analysis;
+  }
+
+  advancedTrendAnalysis() {
+    return this.trendEngine.analyze(
+      this.historicalData,
+      this.realTimeData?.context ?? [],
+      this.performanceMetrics
+    );
+  }
+
+  ensemblePrediction(analysis, trend) {
+    return this.ensembleEngine.combinePredictions(
+      analysis,
+      trend,
+      this.config.ensembleWeights,
+      this.config.predictionThreshold
+    );
+  }
+
+  checkPredictionStability(pred) {
+    return this.stabilityEngine.assess(
+      pred,
+      this.performanceMetrics.last10Predictions
+    );
+  }
+
+  recordPredictionPerformance(pred) {
+    this.performanceMetrics.last10Predictions = [
+      ...this.performanceMetrics.last10Predictions.slice(-9),
+      pred
+    ];
+    const m = this.metricsEngine.calculate(
+      this.performanceMetrics.last10Predictions
+    );
+    this.performanceMetrics = { ...this.performanceMetrics, ...m };
+  }
+
+  async predict() {
+    try {
+      if (this.historicalData.length < 100)
+        throw new Error("Insufficient data for reliable prediction");
+
+      const analysis = await this.multilayerAnalysis();
+      const trend = this.advancedTrendAnalysis();
+      const finalPred = this.ensemblePrediction(analysis, trend);
+      const stability = this.checkPredictionStability(finalPred);
+      this.recordPredictionPerformance(finalPred);
+
+      return {
+        ...finalPred,
+        stability,
+        dataQuality: this.metaData.dataQuality,
+        modelWeights: this.config.ensembleWeights,
+        diagnostics: { analysis, trend }
+      };
+    } catch (e) {
+      return { error: e.message, confidence: 0, recommendation: "No-pred" };
+    }
+  }
+}
+
+/* =======================
+ * Fetch & Transform
+ * ======================= */
+async function fetchSource() {
+  const res = await axios.get(SOURCE_URL, { timeout: 15000 });
+  if (!Array.isArray(res.data)) throw new Error("SOURCE_URL không trả về mảng.");
+  return res.data;
+}
+
+function sortAndNormalize(raw) {
+  const rows = raw.map(normalizeRow).filter((r) => r.session != null);
+  rows.sort((a, b) => a.session - b.session);
+  return rows;
+}
+
+/* =======================
+ * Explain builder cho response
+ * ======================= */
+function buildExplanation(pred) {
+  const a = pred?.diagnostics?.analysis || {};
+  const trend = pred?.diagnostics?.trend || {};
+  const ds = a.deepSequenceModel || {};
+  const ha = a.hybridAttentionModel || {};
+  const qi = a.quantumInspiredNetwork || {};
+  const tf = a.temporalFusionModel || {};
+  const pg = a.probabilisticGraphicalModel || {};
+  const cross = a.crossModel || {};
+
+  return [
+    `Deep-sequence: n-gram ctx="${ds.context ?? ""}", hitsT=${ds.ngramStats?.hitsT ?? 0}, hitsX=${ds.ngramStats?.hitsX ?? 0}, Markov P(T|T)=${ds.markov?.pT_after_T?.toFixed?.(2) ?? "?"}, P(T|X)=${ds.markov?.pT_after_X?.toFixed?.(2) ?? "?"}.`,
+    `Hybrid-attention: streak=${ha.features?.streakLen ?? "?"} (${ha.features?.streakDir === "T" ? "Tài" : "Xỉu"}), alt=${(ha.features?.altRatio ?? 0.5).toFixed(2)}, T-ratio=${(ha.features?.ratioT ?? 0.5).toFixed(2)}.`,
+    `Quantum-inspired: momentum=${qi.components?.mom?.toFixed?.(2) ?? "?"}, mean-rev=${qi.components?.mr?.toFixed?.(2) ?? "?"}, phi≈${qi.components?.phi?.toFixed?.(2) ?? "?"}.`,
+    `Temporal-fusion: p8=${tf.windows?.p8?.toFixed?.(2) ?? "?"}, p20=${tf.windows?.p20?.toFixed?.(2) ?? "?"}, p60=${tf.windows?.p60?.toFixed?.(2) ?? "?"}.`,
+    `Prob-graph: streak=${pg.features?.streak ?? "?"}, altHigh=${pg.features?.altHigh ?? "?"}.`,
+    `Cross-model: mean pT≈${cross.mean?.toFixed?.(3) ?? "?"}, var≈${cross.varP?.toFixed?.(4) ?? "?"}.`,
+    `=> Ensemble p(T)≈${pred?.pT?.toFixed?.(3) ?? "?"} ⇒ ${txLabel(pred?.choice)}.`
+  ].join(" ");
+}
+
+/* =======================
+ * API Routes
+ * ======================= */
+
+// Thông tin
+app.get("/", (req, res) => {
+  res.json({
+    ok: true,
+    name: "TaiXiu Advanced Ensemble API",
+    endpoints: [
+      "/api/taixiu/history",
+      "/api/taixiu/predict",        // dự đoán cho phiên kế tiếp (gắn ở dòng cuối)
+      "/api/taixiu/predict/stream", // 'mỗi phiên một độ tin cậy' (rolling)
+      "/api/taixiu/backtest?limit=150"
+    ]
+  });
+});
+
+// Lịch sử chuẩn hóa
+app.get("/api/taixiu/history", async (_req, res) => {
+  try {
+    const raw = await fetchSource();
+    const rows = sortAndNormalize(raw);
+    res.json({
+      count: rows.length,
+      data: rows.map((r) => ({
+        phien: r.session,
+        xuc_xac: r.dice,
+        tong: r.total,
+        ket_qua: r.R ? txLabel(r.R) : null
+      }))
+    });
   } catch (e) {
-    console.error("Lỗi API du-doan:", e && e.message);
-    res.status(500).json({ error: "Lỗi server hoặc nguồn" });
+    res.status(500).json({ error: e.message || "Fetch error" });
   }
 });
 
-app.get("/api/du-doan/full", async (req, res) => {
+// Dự đoán phiên kế tiếp — gắn vào dòng cuối
+app.get("/api/taixiu/predict", async (_req, res) => {
   try {
-    const { data } = await axios.get(SOURCE_URL, { timeout: 15000 });
-    const hist = shapeHistory(data);
-    if (!hist.length) return res.status(502).json({ error: "Không lấy được dữ liệu nguồn" });
+    const raw = await fetchSource();
+    const rows = sortAndNormalize(raw);
+    const seq = rows.map((r) => r.R).filter(Boolean);
 
-    const detail = [];
-    const start = Math.max(10, hist.length - 50);
-    for (let i = start; i < hist.length; i++) {
-      const past = hist.slice(0, i);
-      const cur = hist[i];
-      const predRes = ensemblePredict(past);
-      detail.push({
-        phien: cur.phien,
-        ket_qua_thuc: cur.ket_qua === "T" ? "Tài" : "Xỉu",
-        du_doan_tai_thoi_diem_do: predRes.pred === "T" ? "Tài" : "Xỉu",
-        dung_khong: predRes.pred === cur.ket_qua,
-        do_tin_cay: Math.round((predRes.conf || 0) * 100) + "%",
+    const predictor = new AdvancedTaiXiuPredictor();
+    await predictor.updateData(seq);
+    const pred = await predictor.predict();
+
+    const out = rows.map((r) => ({
+      phien: r.session,
+      xuc_xac: r.dice,
+      tong: r.total,
+      ket_qua: r.R ? txLabel(r.R) : null,
+      phien_sau: r.session + 1,
+      du_doan: null,
+      do_tin_cay: null,
+      giai_thich: null,
+      rui_ro: null
+    }));
+
+    // gắn dự đoán vào dòng cuối
+    const last = out[out.length - 1];
+    if (pred?.choice) {
+      last.du_doan = txLabel(pred.choice);
+      last.do_tin_cay = Number(((pred.confidence ?? 0.6) * 100).toFixed(1));
+      last.giai_thich = buildExplanation(pred);
+      last.rui_ro = riskFromConfidence(pred.confidence ?? 0.6);
+    }
+
+    res.json({
+      updatedAt: new Date().toISOString(),
+      count: out.length,
+      data: out,
+      next: {
+        phien: rows[rows.length - 1]?.session + 1,
+        du_doan: last.du_doan,
+        do_tin_cay: last.do_tin_cay,
+        giai_thich: last.giai_thich,
+        rui_ro: last.rui_ro
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Predict error" });
+  }
+});
+
+// Stream — “mỗi phiên một độ tin cậy” (rolling prediction cho phiên tiếp theo tại mỗi thời điểm)
+app.get("/api/taixiu/predict/stream", async (req, res) => {
+  try {
+    const limit = Math.max(60, Math.min(400, Number(req.query.limit) || 160));
+    const raw = await fetchSource();
+    let rows = sortAndNormalize(raw);
+    if (rows.length > limit) rows = rows.slice(-limit);
+
+    const recs = [];
+    for (let i = 0; i < rows.length; i++) {
+      const seq = rows.slice(0, i + 1).map((r) => r.R).filter(Boolean);
+      if (seq.length < 100) {
+        recs.push({
+          phien: rows[i].session,
+          phien_sau: rows[i].session + 1,
+          du_doan: null,
+          do_tin_cay: null,
+          giai_thich: "Không đủ dữ liệu (>100) để dự đoán đáng tin.",
+          rui_ro: "cao"
+        });
+        continue;
+      }
+      const predictor = new AdvancedTaiXiuPredictor();
+      await predictor.updateData(seq);
+      const pred = await predictor.predict();
+      recs.push({
+        phien: rows[i].session,
+        phien_sau: rows[i].session + 1,
+        du_doan: txLabel(pred.choice),
+        do_tin_cay: Number(((pred.confidence ?? 0.6) * 100).toFixed(1)),
+        giai_thich: buildExplanation(pred),
+        rui_ro: riskFromConfidence(pred.confidence ?? 0.6)
       });
     }
 
-    const final = ensemblePredict(hist);
-    const bt = overallBacktest(hist, 500);
-
-    res.json({
-      now: hist[hist.length - 1]?.phien,
-      next: hist[hist.length - 1]?.phien + 1,
-      du_doan_tiep: final.pred === "T" ? "Tài" : "Xỉu",
-      do_tin_cay: Math.round((final.conf || 0) * 100) + "%",
-      muc_do_rui_ro: riskLevel(final.conf, hist),
-      giai_thich: final.why,
-      backtest: {
-        ty_le_thanh_cong: Math.round((bt.acc || 0) * 100) + "%",
-        so_mau: bt.sample,
-      },
-      chi_tiet_50_phien_gan: detail,
-    });
+    res.json({ window: rows.length, data: recs });
   } catch (e) {
-    console.error("Lỗi API du-doan/full:", e && e.message);
-    res.status(500).json({ error: "Lỗi server hoặc nguồn" });
+    res.status(500).json({ error: e.message || "Stream error" });
   }
 });
 
-app.get("/api/backtest", async (req, res) => {
+// Backtest — trượt theo thời gian để ước tính độ đúng (proxy)
+app.get("/api/taixiu/backtest", async (req, res) => {
   try {
-    const { data } = await axios.get(SOURCE_URL, { timeout: 15000 });
-    const hist = shapeHistory(data);
-    if (!hist.length) return res.status(502).json({ error: "Không lấy được dữ liệu nguồn" });
-    const lookback = Math.min(Number(req.query.lookback) || 500, hist.length - 1);
-    const bt = overallBacktest(hist, lookback);
+    const limit = Math.max(120, Math.min(600, Number(req.query.limit) || 200));
+    const raw = await fetchSource();
+    let rows = sortAndNormalize(raw);
+    if (rows.length > limit) rows = rows.slice(-limit);
+
+    const seqFull = rows.map((r) => r.R).filter(Boolean);
+    const recs = [];
+    let correct = 0,
+      totalPred = 0;
+
+    for (let cut = 100; cut < seqFull.length - 1; cut++) {
+      const seq = seqFull.slice(0, cut);
+      const predictor = new AdvancedTaiXiuPredictor();
+      await predictor.updateData(seq);
+      const pred = await predictor.predict();
+      const realNext = seqFull[cut]; // kết quả “phiên sau” tại thời điểm cut
+
+      const ok = pred.choice === realNext;
+      totalPred++;
+      if (ok) correct++;
+
+      recs.push({
+        phien: rows[cut - 1].session,
+        phien_sau: rows[cut - 1].session + 1,
+        du_doan: txLabel(pred.choice),
+        do_tin_cay: Number(((pred.confidence ?? 0.6) * 100).toFixed(1)),
+        thuc_te: txLabel(realNext),
+        dung_khong: ok,
+        rui_ro: riskFromConfidence(pred.confidence ?? 0.6)
+      });
+    }
+
+    const acc = totalPred > 0 ? Number(((correct / totalPred) * 100).toFixed(1)) : null;
+
     res.json({
-      lookback,
-      acc: Math.round((bt.acc || 0) * 10000) / 100,
-      sample: bt.sample,
+      evaluated: totalPred,
+      accuracy_percent: acc,
+      data: recs
     });
   } catch (e) {
-    console.error("Lỗi API backtest:", e && e.message);
-    res.status(500).json({ error: "Lỗi server hoặc nguồn" });
+    res.status(500).json({ error: e.message || "Backtest error" });
   }
 });
 
-app.get("/api/bridge", async (req, res) => {
-  try {
-    const { data } = await axios.get(SOURCE_URL, { timeout: 15000 });
-    const hist = shapeHistory(data);
-    if (!hist.length) return res.status(502).json({ error: "Không lấy được dữ liệu nguồn" });
-    const det = detectDominantBridge(hist, 50);
-    res.json({
-      dominant_bridge: det.type ? BRIDGE_TYPES[det.type].desc : "Không rõ",
-      pred_based_on_bridge: det.pred === "T" ? "Tài" : "Xỉu",
-      conf: Math.round(det.conf * 100) + "%",
-      why: det.why
-    });
-  } catch (e) {
-    console.error("Lỗi API bridge:", e && e.message);
-    res.status(500).json({ error: "Lỗi server hoặc nguồn" });
-  }
-});
-
-// Start the server
+/* =======================
+ * Start
+ * ======================= */
 app.listen(PORT, () => {
-  console.log(`Ultimate VIP Predictor running at http://localhost:${PORT}`);
+  console.log(`✅ TaiXiu Advanced Ensemble API running on :${PORT}`);
 });
