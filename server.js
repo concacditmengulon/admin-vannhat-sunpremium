@@ -709,11 +709,11 @@ function rulesPrediction(hist) {
   if (cycle % 2 === 0) {
     const pred = last === "T" ? "T" : "X";
     score[pred] += 2;
-    explain.push(`Cycle length even (${cycle}) → theo same");
+    explain.push(`Cycle length even (${cycle}) → theo same`);
   } else {
     const pred = last === "T" ? "X" : "T";
     score[pred] += 2;
-    explain.push(`Cycle length odd (${cycle}) → đảo");
+    explain.push(`Cycle length odd (${cycle}) → đảo`);
   }
 
   // Determine prediction
@@ -760,10 +760,10 @@ function markovPrediction(hist) {
   let ttt_t = 1, ttt_x = 1, ttx_t = 1, ttx_x = 1, txt_t = 1, txt_x = 1, txx_t = 1, txx_x = 1;
   let xtt_t = 1, xtt_x = 1, xtx_t = 1, xtx_x = 1, xxt_t = 1, xxt_x = 1, xxx_t = 1, xxx_x = 1;
   // Lag4
-  let tttt_t = 1, tttt_x = 1, tttx_t = 1, tttx_x = 1, ttxt_t = 1, ttxt_x = 1, ttx x_t = 1, ttx x_x = 1; // More for lag4
+  let tttt_t = 1, tttt_x = 1, tttx_t = 1, tttx_x = 1, ttxt_t = 1, ttxt_x = 1, ttxx_t = 1, ttxx_x = 1; // More for lag4
   let txxt_t = 1, txxt_x = 1, txxx_t = 1, txxx_x = 1, xttt_t = 1, xttt_x = 1, xttx_t = 1, xttx_x = 1;
   let xtxt_t = 1, xtxt_x = 1, xtxx_t = 1, xtxx_x = 1, xxtt_t = 1, xxtt_x = 1, xxtx_t = 1, xxtx_x = 1;
-  let xxx t_t = 1, xxx t_x = 1, xxxx_t = 1, xxxx_x = 1;
+  let xxxt_t = 1, xxxt_x = 1, xxxx_t = 1, xxxx_x = 1;
   // Lag5 for ultimate accuracy
   let ttttt_t = 1, ttttt_x = 1; // Only some for lag5 to avoid explosion
 
@@ -1055,7 +1055,7 @@ function breakStreakFilter(hist) {
     return {
       pred,
       conf: Math.min(0.98, breakProb + 0.1),
-      why: [`Chuỗi ${s} ${cur === "T" ? "Tài" : "Xỉu"} → xác suất bẻ cầu ${Math.round(breakProb * 100)}%`],
+      why: [`Chuỗi ${s} → xác suất bẻ cầu ${Math.round(breakProb * 100)}%`],
     };
   }
   return {
@@ -1318,7 +1318,39 @@ class OnlineLogisticEnsemble {
     this._warmed = false;
   }
 
-  // ... same methods
+  sigmoid(z) {
+    return 1 / (1 + Math.exp(-z));
+  }
+
+  predictProb(features) {
+    let z = this.bias;
+    for (const key of this.keys) {
+      z += (this.w[key] || 0) * (features[key] || 0);
+    }
+    return this.sigmoid(z);
+  }
+
+  train(features, target) {
+    const predProb = this.predictProb(features);
+    const error = target - predProb;
+    this.bias += this.lr * error;
+    for (const key of this.keys) {
+      const gradient = error * (features[key] || 0);
+      this.w[key] += this.lr * gradient - this.reg * this.w[key];
+    }
+  }
+
+  batchFitWalkForward(hist, featureExtractor, n) {
+    if (this._warmed) return;
+    const targets = hist.map(h => h.ket_qua === 'T' ? 1 : 0);
+    const startIdx = Math.max(0, hist.length - 1 - n);
+    for (let i = startIdx; i < hist.length - 1; i++) {
+      const features = featureExtractor(hist.slice(0, i + 1));
+      const target = targets[i + 1];
+      this.train(features, target);
+    }
+    this._warmed = true;
+  }
 }
 
 function ensemblePredict(hist) {
