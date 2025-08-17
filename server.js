@@ -4,7 +4,7 @@ const cors = require("cors");
 
 // Constants for the server configuration
 const PORT = process.env.PORT || 3000;
-const SOURCE_URL = "https://fullsrc-daynesun.onrender.com/api/taixiu/history";
+const SOURCE_URL = "https://fullsrc-daynesun.onrender.com/api/taixiu/sunwin";
 
 // Initialize the Express application
 const app = express();
