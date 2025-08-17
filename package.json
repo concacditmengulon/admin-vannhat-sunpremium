@@ -1,14 +1,22 @@
 {
-  "name": "ultimate-vip-predictor",
+  "name": "taixiu-advanced-ensemble-api",
   "version": "1.0.0",
-  "description": "An ultimate VIP prediction service for a game.",
+  "description": "Tai/Xiu API (Advanced Ensemble, non-random) — mapping + next-session prediction with confidence, explanation, risk.",
   "main": "server.js",
+  "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
+  "keywords": ["taixiu", "api", "predict", "ensemble", "non-random"],
+  "license": "MIT",
   "dependencies": {
-    "axios": "^1.6.8",
+    "axios": "^1.7.2",
     "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   }
 }
